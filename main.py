@@ -1,380 +1,389 @@
 #!/usr/bin/env python3
-"""news-image-20261120: sum up Friday 20 November 2026 in one image.
+"""Draw Friday 20 November 2026's world news as a newspaper front page.
 
-A newspaper front page drawn two ways: with Pillow (DejaVu fonts) when
-it is installed, and with a pure-stdlib pixel renderer otherwise. The
-grader runs python:3.13-slim, standard library only, so a PIL-only
-program would fail there. Both paths draw the same page, the same
-stories, at the same size, with no network and no randomness, so two
-runs in the same environment write byte-identical PNGs.
+Writes a 1024x1024 PNG to $MAKEFUN_OUTPUT_DIR/entry.png (or /output/entry.png).
+Two render paths, both deterministic:
+  * Pillow path: the picture is built in a pixel buffer and saved with PIL.
+  * Pure-stdlib path: the same buffer is encoded as PNG with zlib only
+    (used whenever Pillow is missing, or when MAKEFUN_FORCE_STDLIB=1).
+The grader runs on python:3.13-slim with no Pillow, so the stdlib path is
+the one that is judged; it is byte-identical across runs.
 
-Run:  mkdir -p out && MAKEFUN_OUTPUT_DIR=out python3 main.py
-Test the stdlib path locally: MAKEFUN_FORCE_STDLIB=1 MAKEFUN_OUTPUT_DIR=out python3 main.py
+All text is drawn with the 5x7 bitmap font below (uppercase letters,
+digits and punctuation), scaled up as needed. No network, no fetched
+images: every mark on the page is drawn in code.
 """
+
 import os
 import struct
+import sys
 import zlib
 
-W, H = 1024, 1024
-PAPER = (247, 243, 232)
-INK = (17, 17, 17)
-GREY = (90, 88, 82)
-RED = (163, 18, 26)
-BLUE = (26, 58, 92)
-LIGHT = (232, 228, 216)
-SKY = (178, 214, 235)
-OCEAN = (38, 84, 138)
-LAND = (74, 140, 74)
-GOLD = (212, 160, 32)
+W = 1024
+H = 1024
 
-# Stories verified from the day's news wires (20 November 2026).
-LEAD = (
-    "CLIMATE  \u2022  ANTALYA",
-    "COP31 DRAFT DROPS FOSSIL FUELS",
-    "Final-day text omits any fossil-fuel phaseout and the $120bn "
-    "adaptation target. Talks may run into the weekend.",
-    RED,
-)
+PAPER = (246, 241, 227)
+INK = (20, 20, 20)
+RED = (163, 22, 33)
+GREY = (110, 104, 90)
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
 
-COLUMNS = [
-    # (kicker, headline, body, colour)
-    ("JUSTICE  \u2022  THE HAGUE", "MYANMAR GUILTY OF GENOCIDE",
-     "UN court rules the 2017 campaign against the Rohingya was "
-     "genocide.", RED),
-    ("DIPLOMACY  \u2022  SHENZHEN", "TRUMP, XI AND PUTIN MEET",
-     "First trilateral summit ends with a four-point peace "
-     "declaration.", BLUE),
-    ("BUSINESS  \u2022  NEW YORK", "ANTHROPIC SOARS ON DEBUT",
-     "Shares close 17% above the $83 IPO price in the biggest "
-     "IPO ever.", BLUE),
-]
-
-PAIRS = [
-    ("CONFLICT  \u2022  THE GULF", "IRAN WIDENS GULF ATTACKS",
-     "Tanker strikes spread to Bahrain and Kuwait. The IEA calls "
-     "it the biggest energy threat in history.", RED),
-    ("MARKETS", "STOCKS SLIDE FOR FIFTH DAY",
-     "S&P 500 falls 2.0% and Nikkei drops 4.68% as AI fears hit "
-     "shares.", BLUE),
-]
-
-BRIEFS = [
-    "SOMALIA EXPELS UAE ENVOY",
-    "META RETHINKS 2030 NET-ZERO GOAL",
-    "65,000 GAZA TENTS AWAIT ENTRY",
-    "FIONA THE HIPPO DIES",
-]
-
-
-# ---------------------------------------------------------------- font (stdlib path)
-# 5x7 bitmap font, uppercase + digits + punctuation. Each glyph is 7 rows
-# of 5 bits, '#' on and '.' off.
-FONT_5X7 = {
-    'A': ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
-    'B': ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
-    'C': ("01110", "10001", "10000", "10000", "10000", "10001", "01110"),
-    'D': ("11110", "10001", "10001", "10001", "10001", "10001", "11110"),
-    'E': ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
-    'F': ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
-    'G': ("01110", "10001", "10000", "10111", "10001", "10001", "01111"),
-    'H': ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
-    'I': ("01110", "00100", "00100", "00100", "00100", "00100", "01110"),
-    'J': ("00111", "00010", "00010", "00010", "00010", "10010", "01100"),
-    'K': ("10001", "10010", "10100", "11000", "10100", "10010", "10001"),
-    'L': ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
-    'M': ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
-    'N': ("10001", "11001", "10101", "10011", "10001", "10001", "10001"),
-    'O': ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
-    'P': ("11110", "10001", "10001", "11110", "10000", "10000", "10000"),
-    'Q': ("01110", "10001", "10001", "10001", "10101", "10010", "01101"),
-    'R': ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
-    'S': ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
-    'T': ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
-    'U': ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
-    'V': ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
-    'W': ("10001", "10001", "10001", "10101", "10101", "11011", "10001"),
-    'X': ("10001", "10001", "01010", "00100", "01010", "10001", "10001"),
-    'Y': ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
-    'Z': ("11111", "00001", "00010", "00100", "01000", "10000", "11111"),
-    '0': ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
-    '1': ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
-    '2': ("01110", "10001", "00001", "00110", "01000", "10000", "11111"),
-    '3': ("11111", "00010", "00100", "00010", "00001", "10001", "01110"),
-    '4': ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
-    '5': ("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
-    '6': ("00110", "01000", "10000", "11110", "10001", "10001", "01110"),
-    '7': ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
-    '8': ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
-    '9': ("01110", "10001", "10001", "01111", "00001", "00010", "01100"),
-    ' ': ("00000", "00000", "00000", "00000", "00000", "00000", "00000"),
-    '.': ("00000", "00000", "00000", "00000", "00000", "01100", "01100"),
-    ',': ("00000", "00000", "00000", "00000", "01100", "00100", "01000"),
-    ':': ("00000", "01100", "01100", "00000", "01100", "01100", "00000"),
-    '-': ("00000", "00000", "00000", "01110", "00000", "00000", "00000"),
-    "'": ("00100", "00100", "01000", "00000", "00000", "00000", "00000"),
-    '(': ("00010", "00100", "01000", "01000", "01000", "00100", "00010"),
-    ')': ("01000", "00100", "00010", "00010", "00010", "00100", "01000"),
-    '/': ("00001", "00010", "00010", "00100", "01000", "01000", "10000"),
-    '%': ("11001", "11010", "00010", "00100", "01000", "01011", "10011"),
-    '!': ("00100", "00100", "00100", "00100", "00100", "00000", "00100"),
-    '?': ("01110", "10001", "00001", "00110", "00100", "00000", "00100"),
-    '$': ("00100", "01111", "10100", "01110", "00101", "11110", "00100"),
-    '&': ("01100", "10010", "10100", "01000", "10101", "10010", "01101"),
-    '\u2022': ("00000", "00000", "01100", "01100", "01100", "00000", "00000"),
+# ---------------------------------------------------------------------------
+# 5x7 bitmap font. Each glyph is 7 rows of 5 bits, stored as 7 integers.
+# Bit 4 is the leftmost pixel of the row, bit 0 the rightmost.
+# ---------------------------------------------------------------------------
+FONT = {
+    "A": (0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11),
+    "B": (0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E),
+    "C": (0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E),
+    "D": (0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E),
+    "E": (0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F),
+    "F": (0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10),
+    "G": (0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F),
+    "H": (0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11),
+    "I": (0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E),
+    "J": (0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C),
+    "K": (0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11),
+    "L": (0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F),
+    "M": (0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11),
 }
 
+FONT.update({
+    "N": (0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11),
+    "O": (0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E),
+    "P": (0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10),
+    "Q": (0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D),
+    "R": (0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11),
+    "S": (0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E),
+    "T": (0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04),
+    "U": (0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E),
+    "V": (0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04),
+    "W": (0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A),
+    "X": (0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11),
+    "Y": (0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04),
+    "Z": (0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F),
+    "0": (0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E),
+    "1": (0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E),
+    "2": (0x0E, 0x11, 0x01, 0x06, 0x08, 0x10, 0x1F),
+    "3": (0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E),
+    "4": (0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02),
+    "5": (0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E),
+    "6": (0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E),
+    "7": (0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08),
+    "8": (0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E),
+    "9": (0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C),
+    " ": (0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00),
+    ".": (0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C),
+    ",": (0x00, 0x00, 0x00, 0x00, 0x0C, 0x04, 0x08),
+    ":": (0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x0C, 0x00),
+    ";": (0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x04, 0x08),
+    "-": (0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00),
+    "!": (0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04),
+    "?": (0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04),
+    "%": (0x19, 0x19, 0x02, 0x04, 0x08, 0x13, 0x13),
+    "$": (0x04, 0x0F, 0x14, 0x0E, 0x05, 0x1E, 0x04),
+    "/": (0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10),
+    "(": (0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02),
+    ")": (0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08),
+    "&": (0x0C, 0x12, 0x14, 0x08, 0x15, 0x12, 0x0D),
+    "+": (0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00),
+    "=": (0x00, 0x00, 0x1F, 0x00, 0x1F, 0x00, 0x00),
+    '"': (0x0A, 0x0A, 0x0A, 0x00, 0x00, 0x00, 0x00),
+    "'": (0x04, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00),
+})
 
-def wrap_text(text, max_width, measure):
-    """Wrap text to lines fitting max_width (measure: text -> pixels)."""
-    words = text.split()
-    lines, cur = [], ""
-    for word in words:
-        trial = word if not cur else cur + " " + word
-        if measure(trial) <= max_width or not cur:
-            cur = trial
-        else:
-            lines.append(cur)
-            cur = word
-    if cur:
-        lines.append(cur)
+
+def text_width(text, scale):
+    """Pixel width of text drawn at the given scale (6 units per char)."""
+    if not text:
+        return 0
+    return (len(text) * 6 - 1) * scale
+
+
+def wrap_words(text, max_width, scale):
+    """Greedy word wrap; returns a list of lines fitting max_width pixels."""
+    lines = []
+    for raw in text.split("\n"):
+        words = raw.split(" ")
+        line = ""
+        for word in words:
+            trial = word if not line else line + " " + word
+            if text_width(trial, scale) <= max_width or not line:
+                line = trial
+            else:
+                lines.append(line)
+                line = word
+        if line:
+            lines.append(line)
     return lines
 
 
-# ---------------------------------------------------------------- backends
-class PilBackend:
-    """Draw with Pillow + DejaVu. Used locally, where Pillow is installed."""
+class Buffer:
+    """An RGB pixel buffer with the drawing primitives the page needs."""
 
-    def __init__(self):
-        from PIL import Image, ImageDraw
-        self._Image = Image
-        self.img = Image.new("RGB", (W, H), PAPER)
-        self.d = ImageDraw.Draw(self.img)
-        self._fonts = {}
+    def __init__(self, width, height, color):
+        self.w = width
+        self.h = height
+        self.px = bytearray(color * (width * height))
 
-    def font(self, size, bold=False, serif=False):
-        key = (size, bold, serif)
-        if key not in self._fonts:
-            from PIL import ImageFont
-            if serif:
-                path = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
-            elif bold:
-                path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-            else:
-                path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-            self._fonts[key] = ImageFont.truetype(path, size)
-        return self._fonts[key]
+    def set_pixel(self, x, y, color):
+        if 0 <= x < self.w and 0 <= y < self.h:
+            i = (y * self.w + x) * 3
+            self.px[i], self.px[i + 1], self.px[i + 2] = color
 
-    def measure(self, text, size, bold=False, serif=False):
-        return self.font(size, bold, serif).getlength(text)
-
-    def rect(self, x, y, w, h, fill):
-        self.d.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
-
-    def ellipse(self, x, y, w, h, fill):
-        self.d.ellipse([x, y, x + w - 1, y + h - 1], fill=fill)
-
-    def text(self, x, y, s, size, fill, bold=False, serif=False, centre=False):
-        f = self.font(size, bold, serif)
-        if centre:
-            x = x - int(f.getlength(s) // 2)
-        self.d.text((x, y), s, font=f, fill=fill)
-
-    def save(self, path):
-        self.img.save(path, format="PNG", compress_level=9)
-
-
-class PixelBackend:
-    """Draw into a plain RGB bytearray and encode PNG with zlib only."""
-
-    def __init__(self):
-        self.pix = bytearray(PAPER * (W * H))
-
-    def _scale(self, size):
-        return max(1, int(round(size / 7.0)))
-
-    def measure(self, text, size, bold=False, serif=False):
-        return len(text) * 6 * self._scale(size)
-
-    def rect(self, x, y, w, h, fill):
-        x0, y0 = max(0, x), max(0, y)
-        x1, y1 = min(W, x + w), min(H, y + h)
+    def fill_rect(self, x, y, w, h, color):
+        x0 = max(0, x)
+        y0 = max(0, y)
+        x1 = min(self.w, x + w)
+        y1 = min(self.h, y + h)
+        row = bytes(color) * (x1 - x0)
         for yy in range(y0, y1):
-            base = yy * W * 3
-            for xx in range(x0, x1):
-                o = base + xx * 3
-                self.pix[o:o + 3] = bytes(fill)
+            i = (yy * self.w + x0) * 3
+            self.px[i:i + (x1 - x0) * 3] = row
 
-    def ellipse(self, x, y, w, h, fill):
-        cx, cy, rx, ry = x + w / 2.0, y + h / 2.0, w / 2.0, h / 2.0
-        for yy in range(max(0, y), min(H, y + h)):
-            dy = (yy + 0.5 - cy) / ry
-            if abs(dy) > 1:
-                continue
-            dx = rx * (1 - dy * dy) ** 0.5
-            self.rect(int(cx - dx), yy, int(2 * dx), 1, fill)
+    def hline(self, x, y, w, color, thick=1):
+        self.fill_rect(x, y, w, thick, color)
 
-    def text(self, x, y, s, size, fill, bold=False, serif=False, centre=False):
-        sc = self._scale(size)
-        if centre:
-            x = x - self.measure(s, size) // 2
-        s = s.upper()
-        for ci, ch in enumerate(s):
-            glyph = FONT_5X7.get(ch, FONT_5X7[' '])
-            gx = x + ci * 6 * sc
+    def vline(self, x, y, h, color, thick=1):
+        self.fill_rect(x, y, thick, h, color)
+
+    def frame(self, x, y, w, h, color, thick=1):
+        self.hline(x, y, w, color, thick)
+        self.hline(x, y + h - thick, w, color, thick)
+        self.vline(x, y, h, color, thick)
+        self.vline(x + w - thick, y, h, color, thick)
+
+    def line(self, x0, y0, x1, y1, color):
+        """Bresenham line."""
+        dx = abs(x1 - x0)
+        dy = -abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy
+        while True:
+            self.set_pixel(x0, y0, color)
+            if x0 == x1 and y0 == y1:
+                return
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x0 += sx
+            if e2 <= dx:
+                err += dx
+                y0 += sy
+
+    def circle(self, cx, cy, r, color):
+        """Midpoint circle outline."""
+        x = 0
+        y = r
+        d = 1 - r
+        while x <= y:
+            for px, py in ((cx + x, cy + y), (cx - x, cy + y),
+                           (cx + x, cy - y), (cx - x, cy - y),
+                           (cx + y, cy + x), (cx - y, cy + x),
+                           (cx + y, cy - x), (cx - y, cy - x)):
+                self.set_pixel(px, py, color)
+            x += 1
+            if d < 0:
+                d += 2 * x + 1
+            else:
+                y -= 1
+                d += 2 * (x - y) + 1
+
+    def draw_text(self, x, y, text, scale, color):
+        """Draw text with the 5x7 bitmap font, uppercased, at scale."""
+        cx = x
+        for ch in text.upper():
+            glyph = FONT.get(ch, FONT[" "])
             for row in range(7):
+                bits = glyph[row]
                 for col in range(5):
-                    if glyph[row][col] == '1':
-                        self.rect(gx + col * sc, y + row * sc, sc, sc, fill)
-                        if bold:
-                            self.rect(gx + col * sc + 1, y + row * sc, sc, sc, fill)
+                    if bits & (1 << (4 - col)):
+                        self.fill_rect(cx + col * scale, y + row * scale,
+                                       scale, scale, color)
+            cx += 6 * scale
+        return cx
 
-    def save(self, path):
-        raw = b"".join(b"\x00" + bytes(self.pix[yy * W * 3:(yy + 1) * W * 3])
-                       for yy in range(H))
+    def draw_text_centered(self, cx, y, text, scale, color):
+        self.draw_text(cx - text_width(text, scale) // 2, y, text, scale, color)
 
-        def chunk(kind, data):
-            c = struct.pack(">I", len(data)) + kind + data
-            return c + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
-
-        ihdr = struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)
-        png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
-               + chunk(b"IDAT", zlib.compress(raw, 9))
-               + chunk(b"IEND", b""))
-        with open(path, "wb") as f:
-            f.write(png)
+    def draw_block(self, x, y, width, text, scale, color, leading=None):
+        """Wrapped paragraph; returns the y just below the last line."""
+        lh = leading if leading is not None else 7 * scale + 4
+        for line in wrap_words(text, width, scale):
+            self.draw_text(x, y, line, scale, color)
+            y += lh
+        return y
 
 
-# ---------------------------------------------------------------- layout
-def draw_block(b, x, y, max_w, lines, size, fill, bold=False, serif=False):
-    for i, line in enumerate(lines):
-        b.text(x, y + i * (size + 6), line, size, fill, bold=bold, serif=serif)
-    return y + len(lines) * (size + 6)
+def encode_png(width, height, rgb):
+    """Minimal deterministic PNG encoder (stdlib only, zlib level 9)."""
+    raw = bytearray()
+    stride = width * 3
+    for yy in range(height):
+        raw.append(0)  # filter: none
+        raw += rgb[yy * stride:(yy + 1) * stride]
+    comp = zlib.compress(bytes(raw), 9)
+
+    def chunk(kind, data):
+        out = struct.pack(">I", len(data)) + kind + data
+        out += struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        return out
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", comp)
+            + chunk(b"IEND", b""))
 
 
-def draw_card(b, x, y, w, h, kicker, headline, body, colour,
-              head_sizes=(26, 24, 22), body_sizes=(18, 16, 14)):
-    """A story card: tinted panel, colour bar, kicker, headline, body."""
-    b.rect(x, y, w, h, LIGHT)
-    b.rect(x, y, w, 5, colour)
-    b.text(x + 14, y + 14, kicker, 15, colour, bold=True)
-    picked = None
-    for hs, bs in zip(head_sizes, body_sizes):
-        hl = wrap_text(headline, w - 28, lambda t, s=hs: b.measure(t, s, serif=True))
-        bl = wrap_text(body, w - 28, lambda t, s=bs: b.measure(t, s))
-        picked = (hs, bs, hl, bl)
-        tall = 38 + min(len(hl), 3) * (hs + 6) + 2 + min(len(bl), 3) * (bs + 6)
-        if len(hl) <= 3 and len(bl) <= 3 and tall <= h - 8:
-            break
-    hs, bs, hl, bl = picked
-    draw_block(b, x + 14, y + 38, w - 28, hl[:3], hs, INK, serif=True)
-    by = y + 38 + min(len(hl), 3) * (hs + 6)
-    draw_block(b, x + 14, by + 2, w - 28, bl[:3], bs, GREY)
+def save_png(buf, path):
+    """Save the buffer as PNG: Pillow when available, else the stdlib encoder."""
+    if os.environ.get("MAKEFUN_FORCE_STDLIB") != "1":
+        try:
+            from PIL import Image
+            img = Image.frombytes("RGB", (buf.w, buf.h), bytes(buf.px))
+            img.save(path, format="PNG")
+            return "pillow"
+        except ImportError:
+            pass
+    with open(path, "wb") as fh:
+        fh.write(encode_png(buf.w, buf.h, bytes(buf.px)))
+    return "stdlib"
 
 
-def draw_globe(b, x, y, w, h):
-    """Warming planet: blue globe, green land, red rising arrow, 1.5C tag."""
-    b.rect(x, y, w, h, SKY)
-    cx, cy, r = x + w // 2, y + h // 2 - 6, 62
-    b.ellipse(cx - r, cy - r, 2 * r, 2 * r, OCEAN)
-    # land blobs, clipped roughly inside the circle by their placement
-    b.ellipse(cx - 44, cy - 38, 44, 26, LAND)
-    b.ellipse(cx + 6, cy - 26, 40, 30, LAND)
-    b.ellipse(cx - 30, cy + 12, 52, 24, LAND)
-    b.ellipse(cx + 22, cy + 22, 26, 16, LAND)
-    # rising arrow, bottom-left to top-right, as stepped squares
-    steps = 18
-    x0, y0 = x + 22, y + h - 34
-    x1, y1 = x + w - 34, y + 26
-    for i in range(steps + 1):
-        px = int(x0 + (x1 - x0) * i / steps)
-        py = int(y0 + (y1 - y0) * i / steps)
-        b.rect(px - 3, py - 3, 7, 7, RED)
-    # arrowhead
-    b.rect(x1 - 14, y1 - 2, 16, 6, RED)
-    b.rect(x1 - 2, y1 - 14, 6, 16, RED)
-    b.text(x + 12, y + h - 26, "1.5C", 22, RED, bold=True)
+# ---------------------------------------------------------------------------
+# The front page: Friday 20 November 2026.
+# ---------------------------------------------------------------------------
+
+def draw_globe(buf, cx, cy, r):
+    """A simple wireframe globe: circle, equator, meridians, poles."""
+    buf.circle(cx, cy, r, INK)
+    buf.circle(cx, cy, r - 2, INK)
+    # Equator and tropics.
+    buf.hline(cx - r, cy, 2 * r, INK)
+    buf.hline(cx - r + 8, cy - r // 2, 2 * r - 16, INK)
+    buf.hline(cx - r + 8, cy + r // 2, 2 * r - 16, INK)
+    # Meridians: two ellipses approximated by short line segments.
+    import math
+    for rx in (r // 3, 2 * r // 3):
+        prev = None
+        for step in range(25):
+            t = math.pi * step / 12.0
+            px = cx + int(rx * math.cos(t))
+            py = cy + int(r * math.sin(t))
+            if prev is not None:
+                buf.line(prev[0], prev[1], px, py, INK)
+            prev = (px, py)
+    # A small landmass: three filled blobs on the globe.
+    buf.fill_rect(cx - r // 2, cy - r // 3, r // 3, r // 4, INK)
+    buf.fill_rect(cx + r // 6, cy + r // 6, r // 4, r // 5, INK)
+    buf.fill_rect(cx - r // 4, cy + r // 3, r // 5, r // 6, INK)
 
 
-def draw_page(b):
-    # outer frame
-    b.rect(14, 14, W - 28, 2, INK)
-    b.rect(14, H - 16, W - 28, 2, INK)
-    b.rect(14, 14, 2, H - 28, INK)
-    b.rect(W - 16, 14, 2, H - 28, INK)
+def draw_page():
+    buf = Buffer(W, H, PAPER)
+    M = 28  # outer margin
 
-    # masthead
-    b.text(W // 2, 32, "THE DAILY WORLD", 58, INK, bold=True, serif=True, centre=True)
-    b.text(W // 2, 104, "THE WORLD IN ONE PAGE", 16, GREY, bold=True, centre=True)
-    b.rect(36, 130, W - 72, 3, RED)
-    b.text(W // 2, 142, "FRIDAY  \u2022  20 NOVEMBER 2026", 26, RED, bold=True, centre=True)
-    b.rect(36, 180, W - 72, 2, GREY)
+    # Outer double border.
+    buf.frame(M, M, W - 2 * M, H - 2 * M, INK, 3)
+    buf.frame(M + 8, M + 8, W - 2 * M - 16, H - 2 * M - 16, INK, 1)
 
-    # lead story, full width, globe graphic on the right
-    kicker, headline, body, colour = LEAD
-    b.rect(36, 196, W - 72, 244, (255, 255, 255))
-    b.rect(36, 196, W - 72, 5, colour)
-    b.text(56, 212, kicker, 18, colour, bold=True)
-    # Shrink until the headline fits in two lines and the body in four.
-    # The stdlib bitmap font is wider per character than DejaVu, so it
-    # needs the smaller sizes; the PIL path takes the first pair.
-    picked = None
-    for hs, bs in [(40, 20), (34, 18), (30, 16)]:
-        hl = wrap_text(headline, 600, lambda t, s=hs: b.measure(t, s, serif=True))
-        bl = wrap_text(body, 600, lambda t, s=bs: b.measure(t, s))
-        picked = (hs, bs, hl, bl)
-        tall = 48 + len(hl) * (hs + 6) + 12 + len(bl) * (bs + 6)
-        if len(hl) <= 2 and len(bl) <= 4 and tall <= 236:
-            break
-    hs, bs, hl, bl = picked
-    draw_block(b, 56, 244, 600, hl, hs, INK, serif=True)
-    draw_block(b, 56, 244 + len(hl) * (hs + 6) + 12, 600, bl, bs, GREY)
-    draw_globe(b, 700, 212, 268, 212)
+    # ---- Masthead ---------------------------------------------------------
+    buf.draw_text_centered(W // 2, 52, "THE WORLD TODAY", 9, INK)
+    buf.hline(M + 8, 148, W - 2 * M - 16, INK, 2)
+    buf.draw_text_centered(W // 2, 162, "FRIDAY 20 NOVEMBER 2026", 3, INK)
+    buf.draw_text(M + 24, 162, "NO. 324", 2, GREY)
+    buf.draw_text(W - M - 24 - text_width("ONE DAY, ONE PICTURE", 2), 162,
+                  "ONE DAY, ONE PICTURE", 2, GREY)
+    buf.hline(M + 8, 196, W - 2 * M - 16, INK, 2)
 
-    # three stories side by side
-    gy, cw, ch, gap = 456, 304, 196, 20
-    for i, (kicker, headline, body, colour) in enumerate(COLUMNS):
-        draw_card(b, 36 + i * (cw + gap), gy, cw, ch,
-                  kicker, headline, body, colour)
+    # ---- Lead story -------------------------------------------------------
+    buf.draw_text(M + 24, 216, "COP31 - ANTALYA", 3, RED)
+    y = 252
+    y = buf.draw_block(M + 24, y, 620, "COP31 DRAFT DROPS", 6, INK, leading=52)
+    y = buf.draw_block(M + 24, y, 620, "FOSSIL FUELS", 6, INK, leading=52)
+    buf.draw_block(M + 24, y + 8, 640,
+                   "THE FINAL TEXT DROPS FOSSIL-FUEL PHASEOUT "
+                   "AND THE $120BN TARGET.", 3, INK, leading=26)
 
-    # two stories side by side
-    gy2, cw2, ch2 = 660, 466, 156
-    for i, (kicker, headline, body, colour) in enumerate(PAIRS):
-        draw_card(b, 36 + i * (cw2 + gap), gy2, cw2, ch2,
-                  kicker, headline, body, colour,
-                  head_sizes=(24, 22, 20), body_sizes=(16, 14, 12))
+    # Lead picture: globe in a frame, right of the lead.
+    px, py, pw, ph = 700, 216, 272, 190
+    buf.frame(px, py, pw, ph, INK, 2)
+    draw_globe(buf, px + pw // 2, py + ph // 2 - 8, 62)
+    buf.draw_text_centered(px + pw // 2, py + ph - 22,
+                           "ANTALYA: FUELS OUT", 2, INK)
+    buf.hline(M + 8, 428, W - 2 * M - 16, INK, 2)
 
-    # also-today briefs strip
-    b.rect(36, 832, W - 72, 96, LIGHT)
-    b.rect(36, 832, W - 72, 5, GOLD)
-    b.text(56, 846, "ALSO TODAY", 17, RED, bold=True)
-    line1 = "  \u2022  ".join(BRIEFS[:2])
-    line2 = "  \u2022  ".join(BRIEFS[2:])
-    b.text(56, 872, line1, 16, INK, bold=True)
-    b.text(56, 900, line2, 16, INK, bold=True)
+    # ---- Second stories: two columns, two rows ----------------------------
+    stories = [
+        ("WORLD", "ICJ FINDS MYANMAR",
+         "GUILTY OF GENOCIDE",
+         "COURT RULES ON THE ROHINGYA CASE."),
+        ("SUMMIT", "TRUMP, XI AND PUTIN",
+         "DECLARE PEACE",
+         "FIRST TRILATERAL SUMMIT ENDS WITH A JOINT DECLARATION."),
+        ("MARKETS", "ANTHROPIC UP 17%",
+         "ON ITS DEBUT",
+         "SHARES CLOSE ABOVE THE $83 IPO PRICE."),
+        ("CONFLICT", "IRAN WIDENS",
+         "GULF ATTACKS",
+         "STRIKES SPREAD ACROSS THE WATERWAY."),
+    ]
+    col_w = 464
+    col_x = [M + 24, M + 24 + col_w + 24]
+    row_y = [452, 588]
+    for i, (kicker, head1, head2, deck) in enumerate(stories):
+        x = col_x[i % 2]
+        yy = row_y[i // 2]
+        buf.draw_text(x, yy, kicker, 2, RED)
+        buf.draw_text(x, yy + 22, head1, 3, INK)
+        buf.draw_text(x, yy + 48, head2, 3, INK)
+        buf.draw_block(x, yy + 78, col_w - 8, deck, 2, INK, leading=18)
+    buf.hline(M + 8, 712, W - 2 * M - 16, INK, 2)
 
-    # footer
-    b.rect(36, 946, W - 72, 2, GREY)
-    b.text(W // 2, 960, "FRIDAY 20 NOVEMBER 2026  \u2022  TEN STORIES",
-           18, GREY, centre=True)
+    # ---- Market strip ------------------------------------------------------
+    buf.fill_rect(M + 8, 724, W - 2 * M - 16, 56, INK)
+    buf.draw_text_centered(W // 2, 742,
+                           "MARKETS   S&P 500 -2.0%   NIKKEI -4.68%", 3, WHITE)
+
+    # ---- Briefs ------------------------------------------------------------
+    buf.draw_text(M + 24, 806, "IN BRIEF", 3, RED)
+    buf.hline(M + 8, 836, W - 2 * M - 16, INK, 1)
+    briefs = [
+        "SOMALIA EXPELS UAE ENVOY",
+        "META RETHINKS 2030 NET-ZERO",
+        "65,000 GAZA TENTS AWAIT ENTRY",
+        "FIONA THE HIPPO DIES",
+    ]
+    yy = 852
+    for line in briefs:
+        buf.fill_rect(M + 24, yy + 4, 10, 10, RED)
+        buf.draw_text(M + 48, yy, line, 3, INK)
+        yy += 28
+
+    # ---- Footer ------------------------------------------------------------
+    buf.hline(M + 8, 968, W - 2 * M - 16, INK, 1)
+    buf.draw_text_centered(W // 2, 972,
+                           "FRIDAY 20 NOVEMBER 2026 - THE DAY IN ONE PICTURE",
+                           2, GREY)
+    return buf
 
 
 def main():
-    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output"
+    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "entry.png")
-    use_stdlib = os.environ.get("MAKEFUN_FORCE_STDLIB") == "1"
-    backend = None
-    if not use_stdlib:
-        try:
-            backend = PilBackend()
-        except Exception:
-            backend = None
-    if backend is None:
-        backend = PixelBackend()
-    draw_page(backend)
-    backend.save(out_path)
-    print("wrote", out_path)
+    path = os.path.join(out_dir, "entry.png")
+    buf = draw_page()
+    how = save_png(buf, path)
+    size = os.path.getsize(path)
+    print("wrote %s (%d bytes) via %s" % (path, size, how))
+    if size > 1048576:
+        print("ERROR: image over the 1 MiB cap", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

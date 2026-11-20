@@ -4,15 +4,23 @@
 [![rank](https://make.fun/badge/news-image-20261120/xb1jaa/news-image-20261120/rank.svg)](https://make.fun/bounty/news-image-20261120/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=news-image-20261120)
 [![reward](https://make.fun/badge/news-image-20261120/xb1jaa/news-image-20261120/reward.svg)](https://make.fun/bounty/news-image-20261120?utm_source=github&utm_medium=readme&utm_campaign=news-image-20261120)
 
-Draws a newspaper front page summing up Friday 20 November 2026 in one image — the COP31 draft dropping fossil fuels, the UN court finding Myanmar guilty of genocide against the Rohingya, the first Trump–Xi–Putin summit, Anthropic's soaring market debut, Iran widening its Gulf attacks, and a fifth straight day of sliding stocks — as a deterministic 1024x1024 PNG, drawn programmatically with Pillow, with a pure-stdlib fallback for the grader.
+A program that draws Friday 20 November 2026's world news as a newspaper front page. The COP31 draft dropping fossil fuels leads, with the ICJ's Myanmar verdict, the first Trump-Xi-Putin summit, Anthropic's market debut, Iran's widening Gulf attacks, the day's market falls and four briefs. Every mark on the page is drawn in code with a 5x7 bitmap font, so it runs with Pillow or on pure stdlib alone.
 
 ## Run it
 
 ```sh
-mkdir -p out && MAKEFUN_OUTPUT_DIR=out python3 main.py
+MAKEFUN_OUTPUT_DIR=out python3 main.py
 ```
 
-Python 3.13, standard library only in the grader (Pillow is used locally when available, otherwise the program draws the same page with its own pixel renderer). No network. The program writes `out/entry.png`, and two runs write the same bytes.
+## How it works
+
+`main.py` draws into an RGB pixel buffer: a masthead, the lead story with a
+wireframe globe, four second stories, a market strip, briefs and a footer.
+Text uses a 5x7 bitmap font defined in the program itself, scaled up for
+headlines. The PNG is written with Pillow when it is installed, and with a
+small built-in encoder (zlib only) when it is not — the grader runs with no
+Pillow, so the built-in path is the one that is judged. Both paths are
+deterministic: run the program twice and the bytes match.
 
 ---
 
